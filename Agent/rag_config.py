@@ -11,7 +11,7 @@ import os
 
 # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 # Paste your OpenAI key between the quotes:
-OPENAI_API_KEY = "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"
+OPENAI_API_KEY = ""
 # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
 # Chat model (OpenAI) used to synthesize & refine answers
@@ -57,3 +57,4 @@ MMR_LAMBDA = float(os.getenv("MMR_LAMBDA", "0.7"))     # 1.0 = relevance only, 0
 
 # Index cap (safety for accidental huge loads)
 MAX_CHUNKS_WARN = int(os.getenv("MAX_CHUNKS_WARN", "300000"))
+
