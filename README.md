@@ -15,8 +15,7 @@
 <details open>
 <summary><h2>Abstract</h2></summary>
 
-Clinical retrieval often fails on nuanced, multi-hop queries due to domain jargon and fragmented evidence. **Agentic Biomedical Retrieval System (ABRS)** is a GPU-accelerated, multi-model retrieval stack that combines (i) **biomedical sentence-transformer ensembles** (e.g., SapBERT, BioBERT) for robust semantic match, (ii) **hybrid re-ranking** that blends dense scores with lexical/phrase features and MMR diversity, and (iii) an **agent loop** with optional LLM-based reflection to refine queries when evidence is insufficient.  
-The system exposes a **FastAPI** backend for ingestion (`/load_csv`, `/load_json`), retrieval (`/search`, `/search_batch`), and agentic QA (`/query`), plus a scripted **Patient→Patient Retrieval (PPR)** evaluation on **PMC-Patients** with **MRR@k, nDCG@k, P@k, R@k**. Encoders run on **GPU**; indexing/search uses **FAISS (CPU)** for broad compatibility. The stack is production-oriented, reproducible, and easily extended to new corpora.
+Update Pending
 </details>
 
 ---
