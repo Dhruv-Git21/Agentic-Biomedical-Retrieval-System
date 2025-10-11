@@ -76,7 +76,7 @@ Core implementation of the **Agentic Biomedical Retrieval Framework**, responsib
 
 ---
 
-#### 🎨 `assets`
+#### 🎨 `assets`[TODO]
 
 Stores all **visual and illustrative resources** used in documentation, reports, and presentations.
 
@@ -90,7 +90,7 @@ Stores all **visual and illustrative resources** used in documentation, reports,
 
 ---
 
-#### 📊 `results`
+#### 📊 `results`[TODO]
 
 Holds all **evaluation artifacts**, **retrieval performance metrics**, and **generative outputs**.
 
