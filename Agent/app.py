@@ -86,3 +86,82 @@ def query(req: QueryRequest):
     if req.reflect:
         refined = reflect_and_refine(req.query, draft, snippets)
     return QueryResponse(answer=draft, refined_answer=refined, evidence=ev, meta={"retrieved": len(idxs)})
+
+# ========= Retrieval-only endpoints for benchmarking =========
+from typing import List, Optional
+from fastapi import HTTPException
+from pydantic import BaseModel
+
+# Try to use retrieval with scores, fallback to indices-only
+try:
+    from retrieval import rerank_hybrid_with_scores  # returns [(idx, score), ...]
+    _WITH_SCORES = True
+except Exception:
+    from retrieval import rerank_hybrid               # returns [idx, ...]
+    _WITH_SCORES = False
+
+class SearchRequest(BaseModel):
+    query: str
+    top_k: int = 10
+    final_k: int = 10
+    exclude_id: Optional[str] = None  # prevent self-hit in PPR
+
+class BatchQueryItem(BaseModel):
+    text: str
+    exclude_id: Optional[str] = None
+
+class SearchBatchRequest(BaseModel):
+    queries: List[BatchQueryItem]
+    top_k: int = 10
+    final_k: int = 10
+
+def _search_core(text: str, top_k: int, final_k: int):
+    if _WITH_SCORES:
+        return rerank_hybrid_with_scores(STORE, text, top_k=top_k, final_k=final_k)  # [(idx, score)]
+    else:
+        idxs = rerank_hybrid(STORE, text, top_k=top_k, final_k=final_k)
+        return [(i, None) for i in idxs]
+
+@app.post("/search")
+def search(req: SearchRequest):
+    global INDEX_READY, STORE
+    if not INDEX_READY or getattr(STORE.mm, "indices", {}) == {}:
+        raise HTTPException(status_code=400, detail="No index loaded. Call /load_json or /load_csv first.")
+    idx_scores = _search_core(req.query, req.top_k, req.final_k)
+
+    out = []
+    for idx, score in idx_scores:
+        c = STORE.get_chunk(idx)
+        # exclude the query's own record (PPR)
+        if req.exclude_id is not None and str(c.hadm_id) == str(req.exclude_id):
+            continue
+        out.append({
+            "id": c.hadm_id,
+            "context": getattr(c, "context", None),
+            "score": (float(score) if score is not None else None)
+        })
+    return {"retrieved": out, "params": {"top_k": req.top_k, "final_k": req.final_k}}
+
+@app.post("/search_batch")
+def search_batch(req: SearchBatchRequest):
+    global INDEX_READY, STORE
+    if not INDEX_READY or getattr(STORE.mm, "indices", {}) == {}:
+        raise HTTPException(status_code=400, detail="No index loaded. Call /load_json or /load_csv first.")
+    results = []
+    for item in req.queries:
+        idx_scores = _search_core(item.text, req.top_k, req.final_k)
+        one = []
+        for idx, score in idx_scores:
+            c = STORE.get_chunk(idx)
+            if item.exclude_id is not None and str(c.hadm_id) == str(item.exclude_id):
+                continue
+            one.append({
+                "id": c.hadm_id,
+                "context": getattr(c, "context", None),
+                "score": (float(score) if score is not None else None)
+            })
+        results.append(one)
+    return {"results": results, "params": {"top_k": req.top_k, "final_k": req.final_k}}
+# =============================================================
+
+
