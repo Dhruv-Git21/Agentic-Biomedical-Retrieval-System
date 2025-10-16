@@ -19,6 +19,13 @@ from rag_config import (
 import spacy
 import en_core_sci_md
 from scispacy.abbreviation import AbbreviationDetector
+# retrieval.py
+import os
+
+# Toggle UMLS expansion at runtime.
+ENABLE_UMLS = os.getenv("ENABLE_UMLS", "0") == "1"
+# If UMLS is enabled, only analyze the first N chars for speed.
+UMLS_MAX_CHARS = int(os.getenv("UMLS_MAX_CHARS", "256"))
 
 _NLP = None
 
@@ -56,6 +63,10 @@ def umls_terms_only(text: str, top_k: int = 1, score_threshold: float = 0.85) ->
     """
     Extract canonical UMLS concept names for entities in text.
     """
+    if not ENABLE_UMLS:
+        return []
+    # Bound processing for speed
+    text = (text or "")[:UMLS_MAX_CHARS]
     nlp = _get_nlp(score_threshold)
     doc = nlp(text)
     linker = nlp.get_pipe("scispacy_linker")
@@ -67,6 +78,7 @@ def umls_terms_only(text: str, top_k: int = 1, score_threshold: float = 0.85) ->
             if kb_ent:
                 out.append(kb_ent.canonical_name.lower())
     return out
+
 
 
 # --- Regex tokenizer ---
@@ -221,4 +233,47 @@ def rerank_hybrid(
 
     selected_indices = mmr_select(cand_tuples, k=final_k, lambda_param=MMR_LAMBDA)
     return selected_indices
+
+# --- retrieval.py (ADD) ---
+def rerank_hybrid_with_scores(
+    store, query: str, top_k: int = TOP_K, final_k: int = FINAL_K
+):
+    """
+    Same as rerank_hybrid but returns [(idx, final_score), ...] for the
+    MMR-selected final_k items, sorted by score desc.
+    """
+    expanded = expand_query_terms(query)
+    emb_query_str = combine_query_for_embedding(expanded)
+    qvecs = store.mm.encode_query_multi(emb_query_str)
+
+    agg = store.mm.search_multi(qvecs, top_k=top_k)
+
+    cand_tuples = []
+    for idx, embed_score in agg.items():
+        doc = store.get_chunk(idx)
+        kw_s = keyword_overlap_score(doc.text, expanded)
+        phr = exact_phrase_bonus(doc.text, query, expanded)
+        off = offtopic_penalty(doc.text, query)
+        final = (
+            ALPHA_EMBED * embed_score
+            + BETA_KEYWORD * kw_s
+            + GAMMA_PHRASE * (1.0 if phr > 0 else 0.0)
+            - DELTA_OFFTOPIC * off
+        )
+        pvec = store.primary_vec(idx)
+        if pvec is None:
+            continue
+        cand_tuples.append((idx, final, pvec, doc.text))
+
+    if not cand_tuples:
+        return []
+
+    # MMR over the same "final" scores
+    selected_indices = mmr_select(cand_tuples, k=final_k, lambda_param=MMR_LAMBDA)
+    # return scores for the selected ones
+    sel_scores = {i: s for (i, s, _, _) in cand_tuples}
+    out = [(i, float(sel_scores.get(i, 0.0))) for i in selected_indices]
+    # sort by score desc for reporting
+    out.sort(key=lambda x: x[1], reverse=True)
+    return out
 
