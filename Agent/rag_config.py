@@ -24,7 +24,7 @@ DEFAULT_LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
 #  - "sentence-transformers/all-MiniLM-L6-v2" (fast baseline)
 EMBED_MODEL_NAMES = os.getenv(
     "EMBED_MODEL_NAMES",
-    "pritamdeka/S-BioBert-snli-multinli-stsb,cambridgeltl/SapBERT-from-PubMedBERT-fulltext",
+    "kamalkraj/BioSimCSE-BioLinkBERT-BASE,cambridgeltl/SapBERT-from-PubMedBERT-fulltext,sentence-transformers/all-MiniLM-L6-v2,gsarti/scibert-nli",
 )
 
 # Device selection: "auto" | "cuda" | "mps" | "cpu"
