@@ -189,58 +189,72 @@ class DocumentStore:
         context_col: Optional[str] = "CONTEXT",
         id_col: Optional[str] = "HADM_ID",
         chunk_size: int = CHUNK_SIZE,
-        chunk_overlap: int = CHUNK_OVERLAP
+        chunk_overlap: int = CHUNK_OVERLAP,
+        append: bool = True,
     ) -> Dict[str, Any]:
-
         # Column normalization
         cols = {c.lower(): c for c in df.columns}
+    
         def pick(col_name: str, fallback: Optional[str] = None):
             if col_name.lower() in cols:
                 return cols[col_name.lower()]
             return fallback
-
+    
         text_col = pick(text_col, fallback=list(df.columns)[0])
         context_col = pick(context_col, fallback=None)
         id_col = pick(id_col, fallback=None)
-
-        # Build chunk list
-        chunks: List[Chunk] = []
-        next_id = 0
+    
+        # Build NEW chunk list from this df
+        new_chunks: List[Chunk] = []
+        next_id = len(self.chunks) if append else 0
+    
         for _, row in df.iterrows():
             text = clean_text(str(row.get(text_col, "")))
             if not text:
                 continue
-            hadm = row.get(id_col, None) if id_col else None
+            hadm_raw = row.get(id_col, None) if id_col else None
+            # always coerce hadm_id to string (matches evaluator keys)
+            hadm = None
+            if hadm_raw is not None and not (isinstance(hadm_raw, float) and np.isnan(hadm_raw)):
+                hadm = str(hadm_raw)
+    
             ctx = clean_text(str(row.get(context_col, ""))) if context_col else ""
             parts = chunk_text(text, chunk_size, chunk_overlap)
             for part in parts:
-                chunks.append(Chunk(id=next_id, hadm_id=hadm, text=part, context=ctx))
+                new_chunks.append(Chunk(id=next_id, hadm_id=hadm, text=part, context=ctx))
                 next_id += 1
-
-        if len(chunks) > MAX_CHUNKS_WARN:
-            # prevent accidental OOM on giant files
+    
+        total_chunks = (len(self.chunks) + len(new_chunks)) if append else len(new_chunks)
+        if total_chunks > MAX_CHUNKS_WARN:
             raise RuntimeError(
-                f"Too many chunks ({len(chunks)}). Increase CHUNK_SIZE or reduce input."
+                f"Too many chunks ({total_chunks}). Increase CHUNK_SIZE or reduce input."
             )
-
-        self.chunks = chunks
-        self._id2row = {c.id: c for c in chunks}
-
-        texts = [c.text for c in chunks]
+    
+        # Replace or append
+        if append and self.chunks:
+            self.chunks.extend(new_chunks)
+        else:
+            self.chunks = new_chunks
+    
+        # Rebuild id map
+        self._id2row = {c.id: c for c in self.chunks}
+    
+        # Encode all texts (full corpus after append) and rebuild indices
+        texts = [c.text for c in self.chunks]
         if not texts:
             raise RuntimeError("No text found to index. Check your column names.")
-
-        # Build multi-model FAISS indices
         self.mm.build(texts)
-
+    
         return {
             "num_rows": len(df),
-            "num_chunks": len(chunks),
+            "num_chunks": len(new_chunks),     # chunks added this call
+            "total_chunks": len(self.chunks),  # total after append
             "embedding_dims": self.mm.dim_by_model,
             "faiss_gpu": self.mm._faiss_gpu,
             "device": self.device,
             "models": self.mm.model_names,
         }
+
 
     def primary_vec(self, idx: int) -> Optional[np.ndarray]:
         embs = self.mm.embeddings_primary
