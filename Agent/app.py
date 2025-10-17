@@ -8,6 +8,9 @@ from document_store import DocumentStore
 from retrieval import rerank_hybrid
 from generation import answer_with_context, reflect_and_refine
 from rag_config import CHUNK_SIZE, CHUNK_OVERLAP
+from typing import Optional, List, Dict, Any  # for type hints used in trace handlers
+from rag_config import MMR_LAMBDA            # needed in mmr_select(..., lambda_param=MMR_LAMBDA)
+
 
 app = FastAPI(title="Biomedical RAG API", version="1.0.0")
 
@@ -388,3 +391,178 @@ def eval_pubmedqa(file: UploadFile = File(...),
         "rows": results[:200]  # sample in response; write CSV client-side if needed
     }
 
+from fastapi import HTTPException
+from typing import Optional, List, Dict, Any
+# reuse existing imports: rerank_hybrid_with_scores/_WITH_SCORES, STORE, INDEX_READY
+
+class TraceSearchRequest(BaseModel):
+    query: str
+    top_k: int = 10
+    final_k: int = 10
+
+@app.post("/trace_search")
+def trace_search(req: TraceSearchRequest):
+    """
+    Return a detailed retrieval trace for a free-text query:
+      - expanded terms
+      - per-model FAISS neighbors with raw & normalized scores
+      - aggregated embedding score per doc
+      - hybrid scoring components per candidate
+      - MMR-selected indices
+    """
+    if not INDEX_READY or getattr(STORE.mm, "indices", {}) == {}:
+        raise HTTPException(status_code=400, detail="No index loaded. Call /load_json or /load_csv first.")
+
+    # 1) expand & encode
+    from retrieval import expand_query_terms, combine_query_for_embedding, hybrid_components_for_doc, mmr_select
+    expanded = expand_query_terms(req.query)
+    emb_query_str = combine_query_for_embedding(expanded)
+    qvecs = STORE.mm.encode_query_multi(emb_query_str)
+
+    # 2) per-model hits + aggregated similarity
+    detailed = STORE.mm.search_multi_detailed(qvecs, top_k=req.top_k)
+    agg = detailed["agg"]  # doc_idx -> embed score
+
+    # 3) build candidate tuples with hybrid scores
+    cand = []
+    breakdown = {}
+    for idx, embed_score in agg.items():
+        c = STORE.get_chunk(idx)
+        comps = hybrid_components_for_doc(c.text, req.query, expanded, embed_score)
+        pvec = STORE.primary_vec(idx)
+        if pvec is None:
+            continue
+        cand.append((idx, comps["final_score"], pvec, c.text))
+        breakdown[int(idx)] = {
+            "hadm_id": (None if c.hadm_id is None else str(c.hadm_id)),
+            "context": getattr(c, "context", None),
+            **comps,
+        }
+
+    # 4) MMR selection on final scores
+    if cand:
+        selected = mmr_select(cand, k=req.final_k, lambda_param=MMR_LAMBDA)
+    else:
+        selected = []
+
+    # 5) response
+    per_model_view = detailed["per_model"]
+    # convert indices to (idx, hadm_id, context) rows for readability
+    def rows_for(model_name: str):
+        out = []
+        I = per_model_view[model_name]["indices"]
+        Sr = per_model_view[model_name]["scores_raw"]
+        Sn = per_model_view[model_name]["scores_norm"]
+        for i, raw, norm in zip(I, Sr, Sn):
+            if i == -1:
+                continue
+            ch = STORE.get_chunk(int(i))
+            out.append({
+                "doc_idx": int(i),
+                "hadm_id": (None if ch.hadm_id is None else str(ch.hadm_id)),
+                "context": getattr(ch, "context", None),
+                "score_raw": float(raw),
+                "score_norm": float(norm),
+            })
+        return out
+
+    per_model_rows = {name: rows_for(name) for name in per_model_view.keys()}
+
+    return {
+        "query": req.query,
+        "expanded_terms": list(expanded),
+        "per_model": per_model_rows,
+        "aggregated_embed": {int(k): float(v) for k, v in agg.items()},
+        "hybrid_breakdown": breakdown,
+        "mmr_selected_doc_indices": [int(x) for x in selected],
+        "final_k": req.final_k,
+    }
+
+# ===== Trace for Patient -> Article (PAR) =====
+class TraceParRequest(BaseModel):
+    text: str
+    top_k: int = 10
+    final_k: int = 10
+
+@app.post("/trace_par")
+def trace_par(req: TraceParRequest):
+    """
+    Trace PAR: show per-model hits, hybrid breakdown, MMR, and title grouping.
+    """
+    if not INDEX_READY or getattr(STORE.mm, "indices", {}) == {}:
+        raise HTTPException(status_code=400, detail="No index loaded. Call /load_json or /load_csv first.")
+
+    from retrieval import expand_query_terms, combine_query_for_embedding, hybrid_components_for_doc, mmr_select
+    expanded = expand_query_terms(req.text)
+    emb_query_str = combine_query_for_embedding(expanded)
+    qvecs = STORE.mm.encode_query_multi(emb_query_str)
+
+    detailed = STORE.mm.search_multi_detailed(qvecs, top_k=req.top_k * 5)  # over-fetch
+    agg = detailed["agg"]
+
+    cand = []
+    breakdown = {}
+    for idx, embed_score in agg.items():
+        c = STORE.get_chunk(idx)
+        comps = hybrid_components_for_doc(c.text, req.text, expanded, embed_score)
+        pvec = STORE.primary_vec(idx)
+        if pvec is None:
+            continue
+        cand.append((idx, comps["final_score"], pvec, c.text))
+        breakdown[int(idx)] = {
+            "hadm_id": (None if c.hadm_id is None else str(c.hadm_id)),
+            "context": getattr(c, "context", None),
+            **comps,
+        }
+
+    selected = mmr_select(cand, k=req.final_k * 5, lambda_param=MMR_LAMBDA) if cand else []
+
+    # group by article title (context), keep best score per title
+    best_by_title: Dict[str, Dict[str, Any]] = {}
+    for i in selected:
+        ch = STORE.get_chunk(int(i))
+        title = getattr(ch, "context", None) or ""
+        if not title:
+            continue
+        sc = breakdown[int(i)]["final_score"]
+        if title not in best_by_title or sc > best_by_title[title]["score"]:
+            best_by_title[title] = {
+                "title": title,
+                "score": sc,
+                "example_doc_idx": int(i),
+                "example_hadm_id": (None if ch.hadm_id is None else str(ch.hadm_id)),
+            }
+
+    arts = sorted(best_by_title.values(), key=lambda x: x["score"], reverse=True)[: req.final_k]
+
+    # per-model rows prettified like in trace_search
+    def rows_for(model_name: str):
+        out = []
+        I = detailed["per_model"][model_name]["indices"]
+        Sr = detailed["per_model"][model_name]["scores_raw"]
+        Sn = detailed["per_model"][model_name]["scores_norm"]
+        for i, raw, norm in zip(I, Sr, Sn):
+            if i == -1:
+                continue
+            ch = STORE.get_chunk(int(i))
+            out.append({
+                "doc_idx": int(i),
+                "hadm_id": (None if ch.hadm_id is None else str(ch.hadm_id)),
+                "context": getattr(ch, "context", None),
+                "score_raw": float(raw),
+                "score_norm": float(norm),
+            })
+        return out
+
+    per_model_rows = {name: rows_for(name) for name in detailed["per_model"].keys()}
+
+    return {
+        "text": req.text,
+        "expanded_terms": list(expanded),
+        "per_model": per_model_rows,
+        "aggregated_embed": {int(k): float(v) for k, v in agg.items()},
+        "hybrid_breakdown": breakdown,
+        "mmr_selected_doc_indices": [int(x) for x in selected],
+        "grouped_articles": arts,
+        "final_k": req.final_k,
+    }
