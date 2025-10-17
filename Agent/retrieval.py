@@ -277,3 +277,20 @@ def rerank_hybrid_with_scores(
     out.sort(key=lambda x: x[1], reverse=True)
     return out
 
+def hybrid_components_for_doc(doc_text: str, query: str, expanded_terms: Tuple[str, ...], embed_score: float):
+    kw_s = keyword_overlap_score(doc_text, expanded_terms)
+    phr = exact_phrase_bonus(doc_text, query, expanded_terms)
+    off = offtopic_penalty(doc_text, query)
+    final = (
+        ALPHA_EMBED * embed_score
+        + BETA_KEYWORD * kw_s
+        + GAMMA_PHRASE * (1.0 if phr > 0 else 0.0)
+        - DELTA_OFFTOPIC * off
+    )
+    return {
+        "embed_score": float(embed_score),
+        "keyword_overlap": float(kw_s),
+        "exact_phrase_bonus": float(1.0 if phr > 0 else 0.0),
+        "offtopic_penalty": float(off),
+        "final_score": float(final),
+    }
