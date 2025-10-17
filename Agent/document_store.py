@@ -171,6 +171,52 @@ class MultiModelIndex:
                 agg[k] /= float(len(qvecs))
         return agg
 
+    def search_multi_detailed(self, qvecs: Dict[str, np.ndarray], top_k: int):
+        """
+        Return detailed per-model hits and the aggregated score used by search_multi.
+        Output:
+          {
+            "per_model": {
+               model_name: {
+                 "indices": [int...],
+                 "scores_raw": [float...],   # FAISS raw IP/L2
+                 "scores_norm": [float...],  # normalized to [0,1] if cosine; else 1/(1+d)
+               }, ...
+            },
+            "agg": { doc_idx: aggregated_score (0..1), ... }
+          }
+        """
+        per_model = {}
+        agg: Dict[int, float] = {}
+    
+        for name, qv in qvecs.items():
+            index = self.indices[name]
+            D, I = index.search(qv.reshape(1, -1).astype(np.float32), top_k)
+            drow, irow = D[0], I[0]
+            scores_norm = []
+            for score_raw, idx in zip(drow, irow):
+                if idx == -1:
+                    scores_norm.append(0.0)
+                    continue
+                if self.use_cosine:
+                    score = max(0.0, min(1.0, 0.5 * (float(score_raw) + 1.0)))
+                else:
+                    score = 1.0 / (1.0 + float(score_raw))
+                scores_norm.append(score)
+                agg[idx] = agg.get(idx, 0.0) + score
+            per_model[name] = {
+                "indices": [int(x) for x in irow],
+                "scores_raw": [float(x) for x in drow],
+                "scores_norm": scores_norm,
+            }
+    
+        if len(qvecs) > 0:
+            for k in list(agg.keys()):
+                agg[k] /= float(len(qvecs))
+    
+        return {"per_model": per_model, "agg": agg}
+
+
 class DocumentStore:
     """
     In-memory store for chunks + multi-model indices.
