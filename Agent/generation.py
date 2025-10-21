@@ -8,7 +8,7 @@ _client = None
 def get_client() -> OpenAI:
     global _client
     if _client is None:
-        if not OPENAI_API_KEY or "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" in OPENAI_API_KEY:
+        if not OPENAI_API_KEY or "ENTER YOUR API KEY" in OPENAI_API_KEY:
             raise RuntimeError("OpenAI API key not set in rag_config.py (OPENAI_API_KEY).")
         _client = OpenAI(api_key=OPENAI_API_KEY)
     return _client
@@ -54,3 +54,4 @@ def reflect_and_refine(question: str, draft: str, snippets: List[str]) -> str:
         temperature=0.1,
     )
     return resp.choices[0].message.content
+
