@@ -15,6 +15,12 @@ class QueryRequest(BaseModel):
     top_k: int = 12
     final_k: int = 5
     reflect: bool = False
+    # --- Agentic RAG controls ---
+    agentic: bool = False                 # turn the multi-hop loop on/off
+    max_loops: int = 3                    # cap retrieval->answer cycles
+    min_new_evidence: int = 2             # stop if fewer novel chunks are found
+    stop_on_confident: bool = True        # allow judge to halt early if confident
+    confidence_threshold: float = 0.65    # 0..1; higher = stricter stopping
 
 class EvidenceItem(BaseModel):
     text: str
