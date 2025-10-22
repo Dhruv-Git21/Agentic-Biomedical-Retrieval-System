@@ -11,7 +11,7 @@ import os
 
 # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 # Paste your OpenAI key between the quotes:
-OPENAI_API_KEY = "REPLACE WITH YOUR OPENAI API KEY"
+OPENAI_API_KEY = "REPLACE WITH YOUR API KEY"
 # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
 # Chat model (OpenAI) used to synthesize & refine answers
@@ -58,4 +58,7 @@ MMR_LAMBDA = float(os.getenv("MMR_LAMBDA", "0.7"))     # 1.0 = relevance only, 0
 # Index cap (safety for accidental huge loads)
 MAX_CHUNKS_WARN = int(os.getenv("MAX_CHUNKS_WARN", "300000"))
 
-
+# ---------------- Agent settings (env can override) ----------------
+AGENT_MAX_LOOPS = int(os.getenv("AGENT_MAX_LOOPS", "3"))
+AGENT_CONFIDENCE_THRESHOLD = float(os.getenv("AGENT_CONFIDENCE_THRESHOLD", "0.65"))
+AGENT_MIN_NEW_EVIDENCE = int(os.getenv("AGENT_MIN_NEW_EVIDENCE", "2"))
