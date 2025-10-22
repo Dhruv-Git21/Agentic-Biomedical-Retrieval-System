@@ -5,14 +5,59 @@ import pandas as pd
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from schemas import LoadJSONRequest, QueryRequest, QueryResponse, EvidenceItem
 from document_store import DocumentStore
-from retrieval import rerank_hybrid
-from generation import answer_with_context, reflect_and_refine
-from rag_config import CHUNK_SIZE, CHUNK_OVERLAP
+# from retrieval import rerank_hybrid
+# from generation import answer_with_context, reflect_and_refine
+# from rag_config import CHUNK_SIZE, CHUNK_OVERLAP
 from typing import Optional, List, Dict, Any  # for type hints used in trace handlers
 from rag_config import MMR_LAMBDA            # needed in mmr_select(..., lambda_param=MMR_LAMBDA)
+from retrieval import rerank_hybrid
+from generation import (
+    answer_with_context,
+    reflect_and_refine,
+    agent_judge_and_refine,
+    squash_queries,
+)
+from rag_config import (
+    CHUNK_SIZE, CHUNK_OVERLAP,
+    AGENT_MAX_LOOPS, AGENT_CONFIDENCE_THRESHOLD, AGENT_MIN_NEW_EVIDENCE
+)
+import os
+import logging
+import traceback
+from fastapi.responses import JSONResponse
+import logging
+logger = logging.getLogger("agentic")
+import rag_config as rc
+
 
 
 app = FastAPI(title="Biomedical RAG API", version="1.0.0")
+# -------- logging (dev) --------
+logger = logging.getLogger("agentic")
+if not logger.handlers:
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter("[%(asctime)s] %(levelname)s %(message)s"))
+    logger.addHandler(_h)
+logger.setLevel(logging.INFO)
+
+@app.exception_handler(Exception)
+async def all_exception_handler(request, exc):
+    tb = traceback.format_exc()
+    logger.error("UNHANDLED %s %s :: %s\n%s", request.method, request.url.path, exc, tb)
+    return JSONResponse(status_code=500, content={"error": str(exc), "traceback": tb})
+
+@app.on_event("startup")
+def _startup_log():
+    try:
+        key = (rc.OPENAI_API_KEY or os.getenv("OPENAI_API_KEY", "")).strip()
+        model = rc.DEFAULT_LLM_MODEL or os.getenv("LLM_MODEL") or os.getenv("DEFAULT_LLM_MODEL") or "unset"
+        logger.info("Startup: rag_config file=%s", getattr(rc, "__file__", "unknown"))
+        logger.info("Startup: OPENAI_API_KEY set=%s len=%d, DEFAULT_LLM_MODEL=%s", bool(key), len(key), model)
+        if "INDEX_READY" in globals():
+            logger.info("Index ready? %s", bool(globals().get("INDEX_READY")))
+    except Exception as e:
+        logger.warning("Startup log failed: %s", e)
+
 
 STORE = DocumentStore()
 INDEX_READY = False
@@ -75,22 +120,129 @@ def load_csv(file: UploadFile = File(...),
 def query(req: QueryRequest):
     if not INDEX_READY or STORE.mm.indices == {}:
         raise HTTPException(status_code=400, detail="No index loaded. Call /load_json or /load_csv first.")
-    # Retrieve final_k indices
-    idxs = rerank_hybrid(STORE, req.query, top_k=req.top_k, final_k=req.final_k)
-    if not idxs:
-        return QueryResponse(answer="No relevant evidence found.", evidence=[], meta={"retrieved": 0})
-    snippets = []
-    ev = []
-    for i in idxs:
-        c = STORE.get_chunk(i)
-        snippets.append(c.text)
-        ev.append(EvidenceItem(text=c.text, hadm_id=c.hadm_id, context=c.context))
-    # Generate
-    draft = answer_with_context(req.query, snippets)
-    refined = None
+        # ---------------- Agent controller ----------------
+    agent_enabled = bool(req.agentic)
+    max_loops = max(1, (req.max_loops or AGENT_MAX_LOOPS))
+    min_new = max(0, (req.min_new_evidence or AGENT_MIN_NEW_EVIDENCE))
+    conf_thr = float(req.confidence_threshold or AGENT_CONFIDENCE_THRESHOLD)
+
+    running_query = req.query
+    seen_idxs = set()
+    gathered_idxs: list[int] = []
+    steps_log: list[dict] = []
+    draft_answer: str = ""
+    for step in range(1, (max_loops if agent_enabled else 1) + 1):
+        logger.info("STEP %s: rerank_hybrid(query=%r, top_k=%s, final_k=%s)", step, running_query, req.top_k, req.final_k)
+        try:
+            idxs = rerank_hybrid(STORE, running_query, top_k=req.top_k, final_k=req.final_k)
+        except Exception as e:
+            logger.error("FAIL at rerank_hybrid (step %s): %s", step, e, exc_info=True)
+            raise
+
+        idxs = rerank_hybrid(STORE, running_query, top_k=req.top_k, final_k=req.final_k)
+        if not idxs:
+            steps_log.append({"step": step, "query": running_query, "reason": "no_results"})
+            break
+        new_idxs = [i for i in idxs if i not in seen_idxs]
+        if agent_enabled and step > 1 and len(new_idxs) < min_new:
+            steps_log.append({"step": step, "query": running_query, "reason": "insufficient_novel_evidence"})
+            break
+        for i in new_idxs:
+            seen_idxs.add(i)
+        gathered_idxs.extend(new_idxs)
+        memory_snippets = [STORE.chunks[i].text for i in gathered_idxs[-(req.final_k*2):]]
+        logger.info("STEP %s: answer_with_context()", step)
+        try:
+            draft_answer = answer_with_context(req.query, memory_snippets)
+        except Exception as e:
+            logger.error("FAIL at answer_with_context (step %s): %s", step, e, exc_info=True)
+            raise
+
+        draft_answer = answer_with_context(req.query, memory_snippets)
+        if not agent_enabled or step == max_loops:
+            steps_log.append({"step": step, "query": running_query, "reason": "max_step_or_agent_off"})
+            break
+        logger.info("STEP %s: agent_judge_and_refine()", step)
+        try:
+            judge = agent_judge_and_refine(
+                question=req.query,
+                running_answer=draft_answer,
+                evidence_snippets=memory_snippets[:12],
+                confidence_threshold=conf_thr,
+                max_new_queries=3,
+            )
+        except Exception as e:
+            logger.error("FAIL at agent_judge_and_refine (step %s): %s", step, e, exc_info=True)
+            raise
+
+        judge = agent_judge_and_refine(
+            question=req.query,
+            running_answer=draft_answer,
+            evidence_snippets=memory_snippets[:12],
+            confidence_threshold=conf_thr,
+            max_new_queries=3,
+        )
+        steps_log.append({"step": step, "query": running_query, **judge})
+        if req.stop_on_confident and (judge.get("confidence", 0.0) >= conf_thr) and not judge.get("need_more", False):
+            break
+        subs = judge.get("sub_queries") or []
+        if not subs:
+            steps_log.append({"step": step, "reason": "no_refinements"})
+            break
+        try:
+            running_query = squash_queries(req.query, subs)
+        except Exception as e:
+            logger.error("FAIL at squash_queries (step %s): %s", step, e, exc_info=True)
+            raise
+
+        running_query = squash_queries(req.query, subs)
+    final_snippets = [STORE.chunks[i].text for i in (gathered_idxs[:req.final_k] if gathered_idxs else [])]
+    if not final_snippets:
+        last_idxs = rerank_hybrid(STORE, req.query, top_k=req.top_k, final_k=req.final_k)
+        final_snippets = [STORE.chunks[i].text for i in last_idxs]
+        gathered_idxs = last_idxs
+    try:
+        final_draft = draft_answer or answer_with_context(req.query, final_snippets)
+    except Exception as e:
+        logger.error("FAIL at final answer_with_context: %s", e, exc_info=True)
+        raise
+    
     if req.reflect:
-        refined = reflect_and_refine(req.query, draft, snippets)
-    return QueryResponse(answer=draft, refined_answer=refined, evidence=ev, meta={"retrieved": len(idxs)})
+        logger.info("FINAL: reflect_and_refine()")
+    try:
+        refined = reflect_and_refine(req.query, final_draft, final_snippets) if req.reflect else None
+    except Exception as e:
+        logger.error("FAIL at reflect_and_refine: %s", e, exc_info=True)
+        raise
+
+    final_draft = draft_answer or answer_with_context(req.query, final_snippets)
+    refined = reflect_and_refine(req.query, final_draft, final_snippets) if req.reflect else None
+    uniq = []
+    seen_local = set()
+    for i in gathered_idxs:
+        if i in seen_local:
+            continue
+        uniq.append(i); seen_local.add(i)
+        if len(uniq) >= req.final_k:
+            break
+    ev = [
+        EvidenceItem(
+            text=STORE.chunks[i].text,
+            hadm_id=getattr(STORE.chunks[i], "id", None),
+            context=getattr(STORE.chunks[i], "context", None),
+        ) for i in uniq
+    ]
+    return QueryResponse(
+        answer=refined or final_draft,
+        refined_answer=refined,
+        evidence=ev,
+        meta={
+            "agentic": agent_enabled,
+            "steps": len(steps_log),
+            "log": steps_log,
+            "total_unique_evidence": len(set(gathered_idxs)),
+        },
+    )
 
 # ========= Retrieval-only endpoints for benchmarking =========
 from typing import List, Optional
