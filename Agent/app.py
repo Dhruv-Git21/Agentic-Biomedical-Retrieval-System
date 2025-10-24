@@ -543,6 +543,77 @@ def eval_pubmedqa(file: UploadFile = File(...),
         "rows": results[:200]  # sample in response; write CSV client-side if needed
     }
 
+# --- app.py (ADD helper) ----------------------------------------------------
+from typing import Tuple
+from rag_config import MMR_LAMBDA
+
+def _build_retrieval_view(q: str, top_k: int, final_k: int):
+    """
+    One retrieval cycle with rich introspection.
+    Returns (TraceRetrievalView dict, selected_indices list[int]).
+    """
+    from retrieval import (
+        expand_query_terms, combine_query_for_embedding,
+        hybrid_components_for_doc, mmr_select
+    )
+
+    if not INDEX_READY or getattr(STORE.mm, "indices", {}) == {}:
+        raise HTTPException(status_code=400, detail="No index loaded. Call /load_json or /load_csv first.")
+
+    expanded = expand_query_terms(q)
+    emb_q = combine_query_for_embedding(expanded)
+    qvecs = STORE.mm.encode_query_multi(emb_q)
+
+    # Over-fetch to give MMR room to diversify
+    detailed = STORE.mm.search_multi_detailed(qvecs, top_k=top_k * 5)
+    per_model = {
+        name: {
+            "indices": [int(x) for x in row["indices"][:top_k]],
+            "scores_raw": [float(x) for x in row["scores_raw"][:top_k]],
+            "scores_norm": [float(x) for x in row["scores_norm"][:top_k]],
+        }
+        for name, row in detailed["per_model"].items()
+    }
+    agg = {int(k): float(v) for k, v in detailed["agg"].items()}
+
+    # Hybrid breakdown + prep for MMR
+    breakdown: Dict[int, Dict[str, float]] = {}
+    cand_tuples = []
+    for idx, embed_score in agg.items():
+        c = STORE.get_chunk(idx)
+        comps = hybrid_components_for_doc(c.text, q, expanded, embed_score)
+        breakdown[int(idx)] = comps
+        vec = STORE.primary_vec(idx)
+        cand_tuples.append((int(idx), comps["final_score"], vec, c.text))
+
+    selected = mmr_select(cand_tuples, k=final_k, lambda_param=MMR_LAMBDA)
+
+    def _preview(txt: str, n: int = 320) -> str:
+        return (txt[:n] + "…") if len(txt) > n else txt
+
+    selected_evidence = []
+    for i in selected:
+        ch = STORE.get_chunk(i)
+        selected_evidence.append({
+            "index": int(i),
+            "hadm_id": None if ch.hadm_id is None else str(ch.hadm_id),
+            "context": ch.context,
+            "text_preview": _preview(ch.text),
+            "score": breakdown[int(i)]["final_score"]
+        })
+
+    view = {
+        "query": q,
+        "expanded_terms": list(expanded),
+        "per_model": per_model,
+        "aggregated_embed": agg,
+        "hybrid_breakdown": breakdown,
+        "mmr_selected_doc_indices": [int(x) for x in selected],
+        "selected_evidence": selected_evidence,
+    }
+    return view, [int(x) for x in selected]
+# ---------------------------------------------------------------------------
+
 from fastapi import HTTPException
 from typing import Optional, List, Dict, Any
 # reuse existing imports: rerank_hybrid_with_scores/_WITH_SCORES, STORE, INDEX_READY
@@ -718,3 +789,124 @@ def trace_par(req: TraceParRequest):
         "grouped_articles": arts,
         "final_k": req.final_k,
     }
+
+# --- app.py (ADD endpoint) --------------------------------------------------
+from schemas import TraceQueryRequest, TraceQueryResponse, TraceStep, TraceAgentView, EvidenceItem
+
+@app.post("/trace_query", response_model=TraceQueryResponse)
+def trace_query(req: TraceQueryRequest):
+    """
+    End-to-end agentic RAG pathway trace.
+    Emits each iteration: retrieval view + agent judgement (+ stop reason).
+    """
+    if not INDEX_READY or getattr(STORE.mm, "indices", {}) == {}:
+        raise HTTPException(status_code=400, detail="No index loaded. Call /load_json or /load_csv first.")
+
+    # local config (mirror /query logic)
+    agent_enabled = True
+    max_loops = int(max(1, req.max_loops))
+    min_new = int(max(0, req.min_new_evidence))
+    conf_thr = float(req.confidence_threshold)
+
+    steps: List[TraceStep] = []
+    running_query = req.query
+    seen_idxs: set[int] = set()
+    gathered_idxs: List[int] = []
+    draft_answer: str = ""
+    final_stop: str = None
+    last_conf: float = None
+
+    for step in range(1, (max_loops if agent_enabled else 1) + 1):
+        # 1) Retrieval (with full introspection)
+        view, selected = _build_retrieval_view(running_query, req.top_k, req.final_k)
+
+        if not selected:
+            steps.append(TraceStep(step=step, retrieval=view, stop_reason="no_results"))
+            final_stop = "no_results"
+            break
+
+        # track novelty (like /query)
+        new_idxs = [i for i in selected if i not in seen_idxs]
+        for i in new_idxs:
+            seen_idxs.add(i)
+        gathered_idxs.extend(new_idxs)
+
+        if agent_enabled and step > 1 and len(new_idxs) < min_new:
+            steps.append(TraceStep(step=step, retrieval=view, stop_reason="insufficient_novel_evidence"))
+            final_stop = "insufficient_novel_evidence"
+            break
+
+        # evidence window for LLM
+        memory_snippets = [STORE.get_chunk(i).text for i in gathered_idxs[-(req.final_k*2):]]
+
+        # 2) Draft answer
+        draft_answer = answer_with_context(req.query, memory_snippets)
+
+        # 3) Agent judgement (if more loops remain)
+        if step == max_loops:
+            steps.append(TraceStep(step=step, retrieval=view, stop_reason="max_step_or_agent_off"))
+            final_stop = "max_step_or_agent_off"
+            break
+
+        judge = agent_judge_and_refine(
+            question=req.query,
+            running_answer=draft_answer,
+            evidence_snippets=memory_snippets[:12],
+            confidence_threshold=conf_thr,
+            max_new_queries=3,
+        )
+        last_conf = float(judge.get("confidence", 0.0))
+        steps.append(TraceStep(
+            step=step,
+            retrieval=view,
+            agent=TraceAgentView(
+                confidence=last_conf,
+                need_more=bool(judge.get("need_more", False)),
+                reasons=judge.get("reasons", ""),
+                sub_queries=list(judge.get("sub_queries") or []),
+            )
+        ))
+
+        # Stop or refine?
+        if req.stop_on_confident and (last_conf >= conf_thr) and not judge.get("need_more", False):
+            steps[-1].stop_reason = "confident"
+            final_stop = "confident"
+            break
+
+        subs = list(judge.get("sub_queries") or [])
+        if not subs:
+            steps[-1].stop_reason = "no_refinements"
+            final_stop = "no_refinements"
+            break
+
+        running_query = squash_queries(req.query, subs)
+
+    # finalize answer
+    final_snips = [STORE.get_chunk(i).text for i in (gathered_idxs[:req.final_k] if gathered_idxs else [])]
+    if not final_snips:
+        # fallback to a single retrieval on the original query
+        base_idxs = rerank_hybrid(STORE, req.query, top_k=req.top_k, final_k=req.final_k)
+        final_snips = [STORE.get_chunk(i).text for i in base_idxs]
+        gathered_idxs = base_idxs
+
+    final_answer = draft_answer or answer_with_context(req.query, final_snips)
+    refined = reflect_and_refine(req.query, final_answer, final_snips) if req.reflect else None
+
+    return {
+        "question": req.query,
+        "steps": steps,
+        "final_answer": refined or final_answer,
+        "refined_answer": refined,
+        "final_evidence": [
+            EvidenceItem(
+                text=STORE.get_chunk(i).text,
+                hadm_id=STORE.get_chunk(i).hadm_id,
+                context=STORE.get_chunk(i).context,
+            )
+            for i in (gathered_idxs[:req.final_k] if gathered_idxs else [])
+        ],
+        "final_confidence": last_conf,
+        "stop_reason": final_stop,
+    }
+# ---------------------------------------------------------------------------
+
