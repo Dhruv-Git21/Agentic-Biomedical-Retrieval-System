@@ -16,7 +16,7 @@ def get_client() -> OpenAI:
     
     # Pull from rag_config first, then env (belt + suspenders)
     from rag_config import OPENAI_API_KEY as CFG_KEY
-    key = (CFG_KEY or os.getenv("OPENAI_API_KEY", "REPLACE WITH YOUR API KEY")).strip()
+    key = (CFG_KEY or os.getenv("OPENAI_API_KEY", "ENTER YOUR API KEY")).strip()
     
     # Log source without leaking the key
     src = "rag_config" if CFG_KEY else ("env" if key else "unset")
