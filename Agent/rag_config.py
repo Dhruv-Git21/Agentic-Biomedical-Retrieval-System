@@ -11,7 +11,7 @@ import os
 
 # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 # Paste your OpenAI key between the quotes:
-OPENAI_API_KEY = "REPLACE WITH YOUR API KEY"
+OPENAI_API_KEY = "ENTER YOUR API KEY"
 # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
 # Chat model (OpenAI) used to synthesize & refine answers
