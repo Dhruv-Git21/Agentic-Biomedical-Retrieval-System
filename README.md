@@ -21,7 +21,7 @@ Update Pending
 ---
 
 <p align="center">
-  <img src="assets/Main_Image.png" width="100%" />
+  <img src="Main_Image.png" width="100%" />
 </p>
 
 **Figure 1.** ABRS architecture: ingestion & chunking → multi-model GPU embeddings → FAISS indices → hybrid re-ranking → evidence selection → (optional) LLM synthesis + verifier/reflection. Evaluation loop computes PPR metrics on PMC-Patients.
