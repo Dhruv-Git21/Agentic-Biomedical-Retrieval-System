@@ -1,6 +1,6 @@
 # Agentic Biomedical Retrieval System (ABRS)
 <p align="center">
-  <img src="assets/Banner.png" alt="Agentic Biomedical Retrieval System" width="100%"/>
+  <img src="Banner.png" alt="Agentic Biomedical Retrieval System" width="100%"/>
 </p>
 
 <p align="center">
