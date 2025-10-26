@@ -24,7 +24,11 @@ Update Pending
   <img src="Main_Image.png" width="100%" />
 </p>
 
-**Figure 1.** ABRS architecture: ingestion & chunking → multi-model GPU embeddings → FAISS indices → hybrid re-ranking → evidence selection → (optional) LLM synthesis + verifier/reflection. Evaluation loop computes PPR metrics on PMC-Patients.
+**Figure 1.** Hybrid biomedical RAG with iterative self-critique.
+Evidence from PubMed (literature) and MIMIC-IV (clini-
+cal notes) is retrieved via domain-specific encoders and re-
+ranked. An agent cycles between reflect and refine, yielding
+a final, evidence-grounded response.
 
 ---
 
@@ -73,34 +77,6 @@ Core implementation of the **Agentic Biomedical Retrieval Framework**, responsib
 | **`repair_csv_quotes.py`** | Utility to automatically clean malformed or corrupted CSV files (e.g., quote mismatches) before ingestion. |
 | **`retrieval.py`** | Core retrieval logic — performs **multi-BERT embedding generation**, **FAISS vector search**, and **hybrid ranking** using MMR. |
 | **`schemas.py`** | Defines Pydantic data models and response structures for API requests and results (documents, embeddings, metrics, etc.). |
-
----
-
-#### 🎨 `assets`[TODO]
-
-Stores all **visual and illustrative resources** used in documentation, reports, and presentations.
-
-| File / Folder | Description |
-|----------------|-------------|
-| **`architecture.png`** | High-level **system architecture** diagram of the agentic retrieval pipeline. |
-| **`retrieval_flow.png`** | Detailed flow of **multi-model retrieval and re-ranking**. |
-| **`model_visualizations/`** | Folder containing **embedding space visualizations**, **attention maps**, or **entity clustering plots**. |
-| **`molecules/`** | Generated molecular structures or biomedical graph visualizations. |
-| **`animations/`** | Short GIFs or MP4s illustrating **agent reflection** and **graph propagation** dynamics. |
-
----
-
-#### 📊 `results`[TODO]
-
-Holds all **evaluation artifacts**, **retrieval performance metrics**, and **generative outputs**.
-
-| File / Folder | Description |
-|----------------|-------------|
-| **`evaluate.py`** | Evaluation driver script — computes metrics like **Precision@k**, **Recall@k**, **MRR**, and **nDCG** for PPR and general retrieval tasks. |
-| **`generated_molecules/`** | Repository of **molecular structures** or entity graphs produced by generative modules. |
-| **`docking/`** | Contains **molecular docking simulation results** and comparative binding affinity analyses. |
-| **`metrics/`** | JSON or CSV summaries of **retrieval and generation performance** per dataset or experiment run. |
-| **`plots/`** | Visual performance summaries (e.g., metric curves, radar plots, or confusion matrices). |
 
 
 </details>
