@@ -55,10 +55,9 @@ Contains all biomedical and graph-based datasets used for retrieval, training, a
 
 | File / Folder | Description |
 |----------------|-------------|
-| **`pubmed_abstracts.txt`** | Corpus of PubMed abstracts serving as the **literature knowledge base** for biomedical entity grounding and embedding training. |
-| **`raw/`** | Directory for **original dataset dumps** (e.g., PMC-Patients, MIMIC-style notes). |
-| **`processed/`** | Preprocessed and chunked biomedical text ready for embedding and indexing. |
-| **`graphs/`** | Contains **entity–document graphs** and **knowledge graph caches** built from biomedical entities for relation-aware retrieval. |
+| **`Agent/`** | Directory for the reproducible Agentic RAG code files. |
+| **`Data/`** | Directory for **original dataset dumps** (e.g., PMC-Patients, MIMIC-style notes). |
+| **`requirements.txt`** | Module Download Kit. |
 
 ---
 #### 🧠 `Agent`
@@ -69,7 +68,6 @@ Core implementation of the **Agentic Biomedical Retrieval Framework**, responsib
 |------|--------------|
 | **`app.py`** | FastAPI entry point — initializes routes for ingestion (`/load_csv`, `/load_json`), retrieval (`/search`, `/query`), and evaluation. |
 | **`document_store.py`** | Manages the in-memory and persistent storage of biomedical documents, embeddings, and FAISS indices. |
-| **`evaluate_ppr.py`** | Implements *Patient→Patient Retrieval (PPR)* evaluation — computes metrics such as **MRR@k**, **nDCG@k**, **Precision@k**, and **Recall@k**. |
 | **`generation.py`** | Optional **LLM synthesis and reflection** module — generates natural language answers from retrieved evidence and performs self-verification loops. |
 | **`load_pmc_to_api.py`** | Preprocessing and ingestion script to load PMC-Patients dataset or user-provided files into the API’s backend. |
 | **`rag_config.py`** | Central configuration file — defines paths, weights (α, β, γ, δ), model selection, and reflection parameters. |
@@ -545,3 +543,13 @@ Run Patient→Patient Retrieval evaluation and export results:
 ```bash
 python evaluate_ppr.py --json /workspace/PMC-Patients.json --k 10 --limit 5000 --batch 64 --out_csv ppr_results.csv
 ```
+</details>
+
+&nbsp;
+<details open>
+<summary><h2>Citation</h2></summary>
+
+Will be updated soon !!
+</details>
+
+&nbsp;
