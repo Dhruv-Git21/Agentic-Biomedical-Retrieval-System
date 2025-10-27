@@ -1,7 +1,7 @@
-# Agentic Biomedical Retrieval System (ABRS)
-<p align="center">
+# Biomedical Evidence Retrieval with Agentic RAG and Dual Text Encoders
+<!-- <p align="center">
   <img src="Banner.png" alt="Agentic Biomedical Retrieval System" width="100%"/>
-</p>
+</p> -->
 
 <p align="center">
   <a href="#run-the-api"><img src="https://img.shields.io/badge/API-FastAPI-009688?logo=fastapi&logoColor=white" /></a>
