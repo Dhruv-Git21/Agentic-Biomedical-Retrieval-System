@@ -14,7 +14,7 @@
 
 <details open>
 <summary><h2>Abstract</h2></summary>
-Static Retrieval-Augmented Generation (RAG) systems often fail to navigate the complexity of biomedical literature. We propose an agentic RAG framework that uses iterative self-critique to dynamically refine queries across scientific literature (PubMed) and clinical notes (MIMIC-IV). Our system achieves state-of-the-art results on the PMC-Patients and PubMedQA benchmarks, with near-perfect patient-to-article retrieval and top question-answering accuracy. These findings show that agentic approaches significantly advance RAG's potential for reliable evidence-based medicine.
+We propose an agentic RAG framework for biomedical evidence retrieval that uses iterative query refinement across PubMed and MIMIC-IV clinical notes. Using dual domain-specific encoders and self-critique loops, our system achieves competitive results on PMC-Patients and PubMedQA benchmarks, demonstrating the value of adaptive retrieval for clinical decision support.
 </details>
 
 ---
